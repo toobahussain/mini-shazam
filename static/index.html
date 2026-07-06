@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Mini Shazam</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #12151c;
+    --line: #232733;
+    --text: #e8eaf0;
+    --muted: #8189a0;
+    --accent: #5eead4;
+    --accent-dim: #1f4a44;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 48px 20px;
+  }
+  .wrap { width: 100%; max-width: 480px; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.02em; }
+  .sub { color: var(--muted); font-size: 14px; margin: 0 0 32px; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 16px; font-weight: 600; }
+
+  button {
+    font: inherit;
+    cursor: pointer;
+    border: none;
+    border-radius: 999px;
+    padding: 14px 20px;
+    font-weight: 600;
+    width: 100%;
+  }
+  .btn-primary { background: var(--accent); color: #06201c; }
+  .btn-primary:disabled { background: var(--accent-dim); color: var(--muted); cursor: not-allowed; }
+  .btn-secondary { background: transparent; border: 1px solid var(--line); color: var(--text); }
+
+  #listenBtn.recording { background: #f87171; color: #2a0808; }
+
+  input[type=text], input[type=file] {
+    width: 100%;
+    background: #0e1015;
+    border: 1px solid var(--line);
+    color: var(--text);
+    padding: 10px 12px;
+    border-radius: 8px;
+    font: inherit;
+    margin-bottom: 10px;
+  }
+
+  .status { font-size: 13px; color: var(--muted); margin-top: 14px; min-height: 18px; }
+  .result { margin-top: 16px; padding: 16px; border-radius: 10px; background: #0e1015; border: 1px solid var(--line); display: none; }
+  .result.show { display: block; }
+  .result .title { font-size: 17px; font-weight: 700; }
+  .result .artist { color: var(--muted); font-size: 14px; margin-top: 2px; }
+  .result .meta { color: var(--accent); font-size: 12px; margin-top: 8px; }
+
+  .song-list { font-size: 13px; color: var(--muted); }
+  .song-list div { padding: 4px 0; border-bottom: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Mini Shazam</h1>
+  <p class="sub">Fingerprint-based song identification, running on your own Postgres DB.</p>
+
+  <div class="panel">
+    <h2>Identify</h2>
+    <button id="listenBtn" class="btn-primary">Listen (10s)</button>
+    <div class="status" id="identifyStatus"></div>
+    <div class="result" id="result">
+      <div class="title" id="resTitle"></div>
+      <div class="artist" id="resArtist"></div>
+      <div class="meta" id="resMeta"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Add a song to the library</h2>
+    <input type="text" id="songTitle" placeholder="Title" />
+    <input type="text" id="songArtist" placeholder="Artist (optional)" />
+    <input type="file" id="songFile" accept="audio/*" />
+    <button id="addBtn" class="btn-secondary">Add to library</button>
+    <div class="status" id="addStatus"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Library</h2>
+    <div class="song-list" id="songList">Loading…</div>
+  </div>
+</div>
+
+<script>
+const API_BASE = window.location.origin; // backend + frontend served from same FastAPI app
+
+async function refreshSongList() {
+  const el = document.getElementById('songList');
+  try {
+    const res = await fetch(`${API_BASE}/songs`);
+    const songs = await res.json();
+    el.innerHTML = songs.length
+      ? songs.map(s => `<div>${s.title}${s.artist ? " — " + s.artist : ""}</div>`).join("")
+      : "No songs yet — add one above.";
+  } catch (e) {
+    el.textContent = "Could not load library.";
+  }
+}
+
+document.getElementById('addBtn').addEventListener('click', async () => {
+  const title = document.getElementById('songTitle').value.trim();
+  const artist = document.getElementById('songArtist').value.trim();
+  const fileInput = document.getElementById('songFile');
+  const status = document.getElementById('addStatus');
+
+  if (!title || !fileInput.files[0]) {
+    status.textContent = "Add a title and choose an audio file.";
+    return;
+  }
+
+  const form = new FormData();
+  form.append('title', title);
+  form.append('artist', artist);
+  form.append('file', fileInput.files[0]);
+
+  status.textContent = "Fingerprinting and uploading…";
+  try {
+    const res = await fetch(`${API_BASE}/add-song`, { method: 'POST', body: form });
+    const data = await res.json();
+    status.textContent = `Added "${data.title}" (${data.num_fingerprints} fingerprints).`;
+    refreshSongList();
+  } catch (e) {
+    status.textContent = "Upload failed: " + e;
+  }
+});
+
+let mediaRecorder, chunks = [];
+
+document.getElementById('listenBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('listenBtn');
+  const status = document.getElementById('identifyStatus');
+  const resultBox = document.getElementById('result');
+  resultBox.classList.remove('show');
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRecorder = new MediaRecorder(stream);
+    chunks = [];
+
+    mediaRecorder.ondataavailable = e => chunks.push(e.data);
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      btn.classList.remove('recording');
+      btn.textContent = "Listen (10s)";
+      btn.disabled = true;
+      status.textContent = "Identifying…";
+
+      const blob = new Blob(chunks, { type: 'audio/webm' });
+      const form = new FormData();
+      form.append('file', blob, 'clip.webm');
+
+      try {
+        const res = await fetch(`${API_BASE}/identify`, { method: 'POST', body: form });
+        const data = await res.json();
+        btn.disabled = false;
+
+        if (data.match) {
+          document.getElementById('resTitle').textContent = data.match.title;
+          document.getElementById('resArtist').textContent = data.match.artist || "";
+          document.getElementById('resMeta').textContent =
+            `matched at ~${data.match.matched_at_seconds}s · confidence ${data.match.confidence_score}`;
+          resultBox.classList.add('show');
+          status.textContent = "";
+        } else {
+          status.textContent = "No match found.";
+        }
+      } catch (e) {
+        btn.disabled = false;
+        status.textContent = "Identify failed: " + e;
+      }
+    };
+
+    mediaRecorder.start();
+    btn.classList.add('recording');
+    btn.textContent = "Listening…";
+    status.textContent = "Recording 10 seconds of audio…";
+    setTimeout(() => mediaRecorder.stop(), 10000);
+  } catch (e) {
+    status.textContent = "Microphone access denied or unavailable.";
+  }
+});
+
+refreshSongList();
+</script>
+</body>
+</html>
