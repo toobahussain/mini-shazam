@@ -5,7 +5,7 @@ Postgres for fingerprint storage, plain HTML/JS frontend using the Web Audio API
 to record from your mic.
 
 ## How it works
-
+ 
 1. **Add songs**: each song is loaded, turned into a spectrogram, and reduced to
    a set of fingerprint hashes (pairs of frequency peaks + the time between them).
    These hashes are stored in Postgres.
